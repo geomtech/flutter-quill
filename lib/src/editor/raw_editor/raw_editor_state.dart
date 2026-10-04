@@ -392,7 +392,9 @@ class QuillRawEditorState extends EditorState
   Widget _scribbleFocusable(Widget child) {
     return ScribbleFocusable(
       editorKey: _editorKey,
-      enabled: widget.config.enableScribble && !widget.config.readOnly,
+      // Scribble must be discoverable while an app-level editor is read-only
+      // so its activation callback can transition that editor into edit mode.
+      enabled: widget.config.enableScribble,
       renderBoxForBounds: () =>
           context
                   .findAncestorStateOfType<QuillEditorState>()
