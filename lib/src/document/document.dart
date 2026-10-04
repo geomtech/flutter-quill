@@ -58,6 +58,14 @@ class Document {
   /// Returns contents of this document as [Delta].
   Delta toDelta() => Delta.from(_delta);
 
+  /// Returns the current contents of this document as [Delta] without copying.
+  ///
+  /// Unlike [toDelta], this does not copy the whole document, which matters
+  /// for rules that only need to iterate it on every keystroke. The returned
+  /// delta must not be mutated.
+  @internal
+  Delta get deltaView => _delta;
+
   final Rules _rules = Rules.getInstance();
 
   void setCustomRules(List<Rule> customRules) {

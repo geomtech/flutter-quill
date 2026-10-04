@@ -292,4 +292,18 @@ void main() {
       expect(document.cachedPlainText, isNull);
     });
   });
+
+  group('deltaView', () {
+    test('reflects the current contents without copying', () {
+      final document = Document()..insert(0, 'Hello');
+      final view = document.deltaView;
+
+      expect(view, document.toDelta());
+      expect(identical(view, document.deltaView), isTrue);
+
+      document.insert(5, ' world');
+      expect(document.deltaView, document.toDelta());
+      expect(view, isNot(document.toDelta()));
+    });
+  });
 }

@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the iOS floating cursor (space bar / trackpad drag): the selection is no longer pushed to the platform on every drag update (which made the cursor jump or stop following the finger); it is committed once when the gesture ends, the editor scrolls to keep the cursor visible, a gesture ended without any move no longer leaves the floating cursor painted, and the left reset origin is now cleared on start.
+- `RenderEditor.getLocalRectForCaret` now includes the horizontal offset of the child box, so the caret rect matches the painted caret when the editor has horizontal padding.
+- Cached link gesture recognizers of a line are now disposed when their text is removed or re-formatted, so removing a link no longer leaves it tappable.
+
+### Changed
+
+- Heuristic rules no longer copy the whole document delta on every edit, improving typing performance in long documents.
+
 ## [11.6.0] - 2026-09-16
 
 ### Added

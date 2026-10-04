@@ -1347,7 +1347,9 @@ class RenderEditor extends RenderEditableContainerBox
     final childLocalRect = targetChild.getLocalRectForCaret(localPosition);
 
     final boxParentData = targetChild.parentData as BoxParentData;
-    return childLocalRect.shift(Offset(0, boxParentData.offset.dy));
+    // Include the horizontal offset of the child (e.g. indented blocks) so the
+    // rect matches the painted caret.
+    return childLocalRect.shift(boxParentData.offset);
   }
 
   // Start floating cursor
@@ -1463,7 +1465,7 @@ class RenderEditor extends RenderEditableContainerBox
       _resetOriginOnBottom = false;
       _resetOriginOnTop = false;
       _resetOriginOnRight = false;
-      _resetOriginOnBottom = false;
+      _resetOriginOnLeft = false;
     }
     _floatingCursorOn = dragState != FloatingCursorDragState.End;
     if (_floatingCursorOn) {

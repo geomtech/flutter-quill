@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -66,6 +67,41 @@ class _TextLineState extends State<TextLine> {
 
   final _linkRecognizers = <Node, GestureRecognizer>{};
 
+  /// The style each cached recognizer was built for, used to drop recognizers
+  /// of nodes that were removed from the line or re-formatted.
+  final _linkRecognizerStyles = <Node, Style>{};
+
+  void _pruneLinkRecognizers() {
+    if (_linkRecognizers.isEmpty) return;
+    final stale = <GestureRecognizer>[];
+    _linkRecognizers.removeWhere((node, recognizer) {
+      final isStale =
+          !identical(node.parent, widget.line) ||
+          _linkRecognizerStyles[node] != node.style;
+      if (isStale) {
+        stale.add(recognizer);
+        _linkRecognizerStyles.remove(node);
+      }
+      return isStale;
+    });
+    if (stale.isEmpty) return;
+    // The previous frame's spans may still reference these recognizers.
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      for (final recognizer in stale) {
+        recognizer.dispose();
+      }
+    });
+  }
+
+  void _clearLinkRecognizers() {
+    _linkRecognizers
+      ..forEach((key, value) {
+        value.dispose();
+      })
+      ..clear();
+    _linkRecognizerStyles.clear();
+  }
+
   QuillPressedKeys? _pressedKeys;
 
   void _pressedKeysChanged() {
@@ -73,11 +109,7 @@ class _TextLineState extends State<TextLine> {
     if (_metaOrControlPressed != newValue) {
       setState(() {
         _metaOrControlPressed = newValue;
-        _linkRecognizers
-          ..forEach((key, value) {
-            value.dispose();
-          })
-          ..clear();
+        _clearLinkRecognizers();
       });
     }
   }
@@ -118,20 +150,14 @@ class _TextLineState extends State<TextLine> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.readOnly != widget.readOnly) {
       _richTextKey = UniqueKey();
-      _linkRecognizers
-        ..forEach((key, value) {
-          value.dispose();
-        })
-        ..clear();
+      _clearLinkRecognizers();
     }
   }
 
   @override
   void dispose() {
     _pressedKeys?.removeListener(_pressedKeysChanged);
-    _linkRecognizers
-      ..forEach((key, value) => value.dispose())
-      ..clear();
+    _clearLinkRecognizers();
     super.dispose();
   }
 
@@ -143,6 +169,7 @@ class _TextLineState extends State<TextLine> {
   @override
   Widget build(BuildContext context) {
     assert(debugCheckHasMediaQuery(context));
+    _pruneLinkRecognizers();
 
     if (widget.line.hasEmbed && widget.line.childCount == 1) {
       // Single child embeds can be expanded
@@ -691,6 +718,9 @@ class _TextLineState extends State<TextLine> {
         _linkRecognizers[segment] = LongPressGestureRecognizer()
           ..onLongPress = () => _longPressLink(segment);
       }
+    }
+    if (_linkRecognizers.containsKey(segment)) {
+      _linkRecognizerStyles[segment] = segment.style;
     }
     return _linkRecognizers[segment];
   }
