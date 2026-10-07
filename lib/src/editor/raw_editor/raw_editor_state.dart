@@ -1,4 +1,5 @@
 import 'dart:async' show StreamSubscription, Timer;
+import 'dart:collection' show HashMap;
 import 'dart:convert' show jsonDecode, jsonEncode;
 import 'dart:math' as math;
 import 'dart:ui' as ui hide TextStyle;
@@ -21,6 +22,7 @@ import '../../delta/delta_diff.dart';
 import '../../document/attribute.dart';
 import '../../document/document.dart';
 import '../../document/nodes/block.dart';
+import '../../document/nodes/leaf.dart';
 import '../../document/nodes/line.dart';
 import '../../document/nodes/node.dart';
 import '../editor.dart';
@@ -74,7 +76,98 @@ class QuillRawEditorState extends EditorState
   bool get _hasFocus => widget.config.focusNode.hasFocus;
 
   // Theme
+  DefaultStyles? _inheritedStyles;
+  Object? _inheritedStylesKey;
   DefaultStyles? _styles;
+
+  void _resolveStyles() {
+    final customStyles = widget.config.customStyles;
+    _styles = customStyles == null
+        ? _inheritedStyles
+        : _inheritedStyles!.merge(customStyles);
+  }
+
+  /// [TextLine]s reused across editor rebuilds. Moving the caret or a
+  /// selection handle reuses every line; editing the document only rebuilds
+  /// the lines whose content or style changed.
+  final Map<Line, _CachedTextLine> _textLineCache =
+      HashMap<Line, _CachedTextLine>.identity();
+  Document? _textLineCacheDocument;
+  Object? _textLineCacheDelta;
+  Object? _textLineCacheConfig;
+  int _textLineCacheGeneration = 0;
+
+  /// Only the configuration that a [TextLine] renders with, so rebuilding the
+  /// editor for padding, insets or cursor changes keeps the cached lines.
+  Object _textLineConfigKey() {
+    final config = widget.config;
+    return (
+      config.embedBuilder,
+      config.textSpanBuilder,
+      config.customStyleBuilder,
+      config.customRecognizerBuilder,
+      config.readOnly,
+      config.onLaunchUrl,
+      config.customLinkPrefixes,
+      config.transformLink,
+    );
+  }
+
+  DefaultStyles? _textLineCacheStyles;
+  TextRange? _textLineCacheComposingRange;
+  TextDirection? _textLineCacheTextDirection;
+
+  void _validateTextLineCache(Document doc) {
+    // A line only renders a valid, non-collapsed composing range, so other
+    // values (e.g. iOS typing without marked text) keep the cached lines.
+    final rawComposing = composingRange.value;
+    final composing = rawComposing.isValid && !rawComposing.isCollapsed
+        ? rawComposing
+        : null;
+    final configKey = _textLineConfigKey();
+    if (!identical(_textLineCacheDocument, doc) ||
+        _textLineCacheConfig != configKey ||
+        !identical(_textLineCacheStyles, _styles) ||
+        _textLineCacheComposingRange != composing ||
+        _textLineCacheTextDirection != _textDirection) {
+      _textLineCache.clear();
+      _textLineCacheDocument = doc;
+      _textLineCacheDelta = doc.deltaView;
+      _textLineCacheConfig = configKey;
+      _textLineCacheStyles = _styles;
+      _textLineCacheComposingRange = composing;
+      _textLineCacheTextDirection = _textDirection;
+      return;
+    }
+    // Every document mutation goes through Document.compose, which replaces
+    // the delta instance. Lines are mutated in place, so after a change each
+    // cached line is checked against its content signature before reuse.
+    if (!identical(_textLineCacheDelta, doc.deltaView)) {
+      _textLineCacheDelta = doc.deltaView;
+      _textLineCacheGeneration++;
+      _textLineCache.removeWhere((line, _) => line.list == null);
+    }
+  }
+
+  TextLine _cachedTextLine(Line line, TextLine Function() create) {
+    final cached = _textLineCache[line];
+    if (cached != null) {
+      if (cached.generation == _textLineCacheGeneration) {
+        return cached.textLine;
+      }
+      if (cached.matches(line)) {
+        cached.generation = _textLineCacheGeneration;
+        return cached.textLine;
+      }
+    }
+    final textLine = create();
+    _textLineCache[line] = _CachedTextLine(
+      textLine,
+      _CachedTextLine.signatureOf(line),
+      _textLineCacheGeneration,
+    );
+    return textLine;
+  }
 
   // for pasting style
   @override
@@ -582,7 +675,10 @@ class QuillRawEditorState extends EditorState
       return;
     }
     final oldSelection = controller.selection;
-    controller.updateSelection(selection, ChangeSource.local);
+    _updateSelectionWithoutCaretReveal(
+      cause == SelectionChangedCause.drag,
+      () => controller.updateSelection(selection, ChangeSource.local),
+    );
 
     _selectionOverlay?.handlesVisible = _shouldShowSelectionHandles();
 
@@ -654,6 +750,7 @@ class QuillRawEditorState extends EditorState
     // to the next EditableTextBlock
     var prevNodeOl = false;
     var clearIndents = false;
+    _validateTextLineCache(doc);
 
     for (final node in doc.root.children) {
       final attrs = node.style.attributes;
@@ -673,6 +770,9 @@ class QuillRawEditorState extends EditorState
         );
         result.add(
           Directionality(
+            // Keyed by node so inserting or removing a line does not rebuild
+            // every following line against a shifted element.
+            key: ObjectKey(node),
             textDirection: nodeTextDirection,
             child: editableTextLine,
           ),
@@ -710,9 +810,12 @@ class QuillRawEditorState extends EditorState
           customLinkPrefixes: widget.config.customLinkPrefixes,
           transformLink: widget.config.transformLink,
           composingRange: composingRange.value,
+          textLineFor: _cachedTextLine,
         );
         result.add(
           Directionality(
+            // Editing a list replaces its Block but keeps its lines.
+            key: ObjectKey(node.children.first),
             textDirection: nodeTextDirection,
             child: editableTextBlock,
           ),
@@ -733,21 +836,24 @@ class QuillRawEditorState extends EditorState
     BuildContext context,
     Map<String, Attribute<dynamic>> attrs,
   ) {
-    final textLine = TextLine(
-      line: node,
-      textDirection: _textDirection,
-      embedBuilder: widget.config.embedBuilder,
-      textSpanBuilder: widget.config.textSpanBuilder,
-      customStyleBuilder: widget.config.customStyleBuilder,
-      customRecognizerBuilder: widget.config.customRecognizerBuilder,
-      styles: _styles!,
-      readOnly: widget.config.readOnly,
-      controller: controller,
-      linkActionPicker: _linkActionPicker,
-      onLaunchUrl: widget.config.onLaunchUrl,
-      customLinkPrefixes: widget.config.customLinkPrefixes,
-      transformLink: widget.config.transformLink,
-      composingRange: composingRange.value,
+    final textLine = _cachedTextLine(
+      node,
+      () => TextLine(
+        line: node,
+        textDirection: _textDirection,
+        embedBuilder: widget.config.embedBuilder,
+        textSpanBuilder: widget.config.textSpanBuilder,
+        customStyleBuilder: widget.config.customStyleBuilder,
+        customRecognizerBuilder: widget.config.customRecognizerBuilder,
+        styles: _styles!,
+        readOnly: widget.config.readOnly,
+        controller: controller,
+        linkActionPicker: _linkActionPicker,
+        onLaunchUrl: widget.config.onLaunchUrl,
+        customLinkPrefixes: widget.config.customLinkPrefixes,
+        transformLink: widget.config.transformLink,
+        composingRange: composingRange.value,
+      ),
     );
     final editableTextLine = EditableTextLine(
       node,
@@ -990,13 +1096,20 @@ class QuillRawEditorState extends EditorState
   void didChangeDependencies() {
     super.didChangeDependencies();
     final parentStyles = QuillStyles.getStyles(context, true);
-    final defaultStyles = DefaultStyles.getInstance(context);
-    _styles = (parentStyles != null)
-        ? defaultStyles.merge(parentStyles)
-        : defaultStyles;
-
-    if (widget.config.customStyles != null) {
-      _styles = _styles!.merge(widget.config.customStyles!);
+    // DefaultStyles.getInstance only reads these, so keep the same instance
+    // (and the cached lines) when an unrelated dependency notifies.
+    final stylesKey = (
+      parentStyles,
+      Theme.of(context),
+      DefaultTextStyle.of(context).style,
+    );
+    if (_inheritedStyles == null || stylesKey != _inheritedStylesKey) {
+      _inheritedStylesKey = stylesKey;
+      final defaultStyles = DefaultStyles.getInstance(context);
+      _inheritedStyles = (parentStyles != null)
+          ? defaultStyles.merge(parentStyles)
+          : defaultStyles;
+      _resolveStyles();
     }
 
     _requestAutoFocusIfShould();
@@ -1049,9 +1162,10 @@ class QuillRawEditorState extends EditorState
       }
     }
 
-    // in case customStyles changed in new widget
-    if (widget.config.customStyles != null) {
-      _styles = _styles!.merge(widget.config.customStyles!);
+    // Keep the same styles instance unless customStyles changed, so cached
+    // lines survive rebuilds of the editor.
+    if (!identical(widget.config.customStyles, oldWidget.config.customStyles)) {
+      _resolveStyles();
     }
   }
 
@@ -1280,7 +1394,36 @@ class QuillRawEditorState extends EditorState
   // selection change so the caret — and the toolbar — stay put.
   bool _ignoreCheckboxTapSelectionChange = false;
 
+  // A dragged selection is revealed at the dragged end by bringIntoView; the
+  // animated caret reveal would scroll towards the extent instead and fight it.
+  bool _skipCaretReveal = false;
+
+  void _updateSelectionWithoutCaretReveal(bool skip, VoidCallback update) {
+    if (!skip) {
+      update();
+      return;
+    }
+    _skipCaretReveal = true;
+    try {
+      update();
+    } finally {
+      _skipCaretReveal = false;
+    }
+  }
+
+  @override
+  void userUpdateTextEditingValue(
+    TextEditingValue value,
+    SelectionChangedCause cause,
+  ) {
+    _updateSelectionWithoutCaretReveal(
+      cause == SelectionChangedCause.drag,
+      () => super.userUpdateTextEditingValue(value, cause),
+    );
+  }
+
   void _showCaretOnScreen() {
+    if (_skipCaretReveal) return;
     if (!widget.config.showCursor || _showCaretOnScreenScheduled) {
       return;
     }
@@ -1446,4 +1589,42 @@ class QuillRawEditorState extends EditorState
 
   @override
   bool get shareEnabled => false;
+}
+
+/// A cached [TextLine] with the identity of everything it was built from.
+///
+/// Document edits replace a leaf's text string and a node's [Style] instead
+/// of mutating them, so identity comparison detects any change to the line.
+class _CachedTextLine {
+  _CachedTextLine(this.textLine, this.signature, this.generation);
+
+  final TextLine textLine;
+  final List<Object?> signature;
+  int generation;
+
+  static List<Object?> signatureOf(Line line) {
+    final signature = <Object?>[line.style];
+    for (final child in line.children) {
+      signature
+        ..add(child)
+        ..add(child.style)
+        ..add(child is Leaf ? child.value : null);
+    }
+    return signature;
+  }
+
+  bool matches(Line line) {
+    if (!identical(signature[0], line.style)) return false;
+    var i = 1;
+    for (final child in line.children) {
+      if (i + 2 >= signature.length ||
+          !identical(signature[i], child) ||
+          !identical(signature[i + 1], child.style) ||
+          !identical(signature[i + 2], child is Leaf ? child.value : null)) {
+        return false;
+      }
+      i += 3;
+    }
+    return i == signature.length;
+  }
 }

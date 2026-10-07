@@ -86,6 +86,7 @@ class EditableTextBlock extends StatelessWidget {
     this.transformLink,
     this.customLeadingBlockBuilder,
     this.showCodeBlockLineNumbers = true,
+    this.textLineFor,
     super.key,
   });
 
@@ -118,6 +119,10 @@ class EditableTextBlock extends StatelessWidget {
   final List<String> customLinkPrefixes;
   final String Function(String link)? transformLink;
   final TextRange composingRange;
+
+  /// Returns the [TextLine] for a line, letting the editor reuse the widget
+  /// when only the selection changed.
+  final TextLine Function(Line line, TextLine Function() create)? textLineFor;
 
   @override
   Widget build(BuildContext context) {
@@ -158,6 +163,26 @@ class EditableTextBlock extends StatelessWidget {
       return defaultStyles!.code!.decoration;
     }
     return null;
+  }
+
+  TextLine _textLineFor(Line line) {
+    TextLine create() => TextLine(
+      line: line,
+      textDirection: textDirection,
+      embedBuilder: embedBuilder,
+      textSpanBuilder: textSpanBuilder,
+      customStyleBuilder: customStyleBuilder,
+      styles: styles!,
+      readOnly: readOnly,
+      controller: controller,
+      linkActionPicker: linkActionPicker,
+      onLaunchUrl: onLaunchUrl,
+      customLinkPrefixes: customLinkPrefixes,
+      transformLink: transformLink,
+      customRecognizerBuilder: customRecognizerBuilder,
+      composingRange: composingRange,
+    );
+    return textLineFor?.call(line, create) ?? create();
   }
 
   List<Widget> _buildChildren(
@@ -211,22 +236,7 @@ class EditableTextBlock extends StatelessWidget {
         leading != null
             ? Directionality(textDirection: textDirection, child: leading)
             : null,
-        TextLine(
-          line: line,
-          textDirection: textDirection,
-          embedBuilder: embedBuilder,
-          textSpanBuilder: textSpanBuilder,
-          customStyleBuilder: customStyleBuilder,
-          styles: styles!,
-          readOnly: readOnly,
-          controller: controller,
-          linkActionPicker: linkActionPicker,
-          onLaunchUrl: onLaunchUrl,
-          customLinkPrefixes: customLinkPrefixes,
-          transformLink: transformLink,
-          customRecognizerBuilder: customRecognizerBuilder,
-          composingRange: composingRange,
-        ),
+        _textLineFor(line),
         horizontalSpacingForBlock,
         _getSpacingForLine(line, index, count, defaultStyles),
         textDirection,
@@ -242,6 +252,9 @@ class EditableTextBlock extends StatelessWidget {
       final nodeTextDirection = getDirectionOfNode(line, textDirection);
       children.add(
         Directionality(
+          // Keyed by node so inserting or removing a line does not rebuild
+          // every following line against a shifted element.
+          key: ObjectKey(line),
           textDirection: nodeTextDirection,
           child: editableTextLine,
         ),

@@ -18,6 +18,11 @@ mixin RawEditorStateSelectionDelegateMixin on EditorState
     final cursorPosition = value.selection.extentOffset;
     final oldText = widget.controller.document.toPlainText();
     final newText = value.text;
+    if (newText == oldText) {
+      // Only changing selection range (e.g. dragging a selection handle).
+      widget.controller.updateSelection(value.selection, ChangeSource.local);
+      return;
+    }
     final diff = getDiff(oldText, newText, cursorPosition);
     if (diff.deleted == '' && diff.inserted == '') {
       // Only changing selection range
